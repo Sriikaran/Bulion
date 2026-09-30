@@ -1,0 +1,446 @@
+// Bullion — Bullion Inventory & Transaction Management System
+// Prisma Schema — PostgreSQL (Prisma 7+)
+// Connection URLs are configured in prisma.config.ts.
+// Do NOT add url/directUrl here.
+//
+// B1 INVARIANT:
+//   CURRENT STOCK = OPENING + PURCHASES - SALES ± ADJUSTMENTS
+//   Tracked independently per (Metal × Purity) bucket.
+//   Source of truth: StockMovement (append-only).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==================== ENUMS ====================
+
+enum Role {
+  ADMIN
+  STAFF
+}
+
+enum MetalType {
+  GOLD
+  SILVER
+}
+
+enum TransactionStatus {
+  DRAFT
+  POSTED
+  CANCELLED
+}
+
+enum AdjustmentDirection {
+  INCREASE
+  DECREASE
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CARD
+  CHEQUE
+  OTHER
+}
+
+enum CounterpartyType {
+  SUPPLIER
+  CUSTOMER
+  BOTH
+}
+
+/// Append-only movement type for StockMovement
+enum MovementType {
+  OPENING
+  PURCHASE
+  PURCHASE_CANCEL
+  SALE
+  SALE_CANCEL
+  ADJUSTMENT_INCREASE
+  ADJUSTMENT_DECREASE
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  CANCEL
+  ACTIVATE
+  DEACTIVATE
+  POST
+}
+
+// ==================== BETTER AUTH TABLES ====================
+
+model user {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  role     Role    @default(STAFF)
+  phone    String? @unique
+  isActive Boolean @default(true)
+
+  sessions session[]
+  accounts account[]
+
+  purchases          Purchase[]        @relation("PurchaseCreatedBy")
+  sales              Sale[]            @relation("SaleCreatedBy")
+  adjustments        StockAdjustment[] @relation("AdjustmentCreatedBy")
+  stockMovements     StockMovement[]
+  auditLogs          AuditLog[]
+  openingStocks      OpeningStock[]
+
+  @@map("user")
+}
+
+model session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      user     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  user      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("account")
+}
+
+model verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+
+  @@map("verification")
+}
+
+// ==================== MASTER DATA ====================
+
+/// Physical precious metal (Gold, Silver). Never delete — deactivate instead.
+model Metal {
+  id        String    @id @default(cuid())
+  /// Normalized uppercase code, e.g. "GOLD", "SILVER"
+  code      String    @unique
+  name      String    @unique
+  type      MetalType @unique
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  purities       Purity[]
+  purchases      Purchase[]
+  sales          Sale[]
+  adjustments    StockAdjustment[]
+  stockMovements StockMovement[]
+  openingStocks  OpeningStock[]
+  auditLogs      AuditLog[]        @relation("AuditMetal")
+
+  @@map("metal")
+}
+
+/// Purity/fineness definition within a Metal. Never delete — deactivate instead.
+model Purity {
+  id          String   @id @default(cuid())
+  metalId     String
+  metal       Metal    @relation(fields: [metalId], references: [id])
+  /// Human label, e.g. "24K (999.9)", "925 Sterling"
+  label       String
+  /// Fineness fraction 0 < fineness ≤ 1.0000, stored to 4 dp
+  /// e.g. 0.9999 for 24K 999.9, 0.9250 for 925 Sterling
+  fineness    Decimal  @db.Decimal(6, 4)
+  /// Optional display string, e.g. "22 Karat"
+  displayInfo String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  purchases      Purchase[]
+  sales          Sale[]
+  adjustments    StockAdjustment[]
+  stockMovements StockMovement[]
+  openingStocks  OpeningStock[]
+  auditLogs      AuditLog[]        @relation("AuditPurity")
+
+  @@unique([metalId, label])
+  @@index([metalId])
+  @@map("purity")
+}
+
+/// Reusable counterparty (supplier / customer / both).
+/// Never delete if transaction history exists — deactivate instead.
+model Counterparty {
+  id        String           @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  type      CounterpartyType
+  isActive  Boolean          @default(true)
+  notes     String?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  purchases Purchase[]
+  sales     Sale[]
+
+  @@index([type])
+  @@index([isActive])
+  @@map("counterparty")
+}
+
+// ==================== OPENING STOCK ====================
+
+/// Immutable opening stock entry per (Metal × Purity).
+/// Creates a corresponding OPENING StockMovement.
+model OpeningStock {
+  id           String   @id @default(cuid())
+  metalId      String
+  metal        Metal    @relation(fields: [metalId], references: [id])
+  purityId     String
+  purity       Purity   @relation(fields: [purityId], references: [id])
+  weightGrams  Decimal  @db.Decimal(14, 4)
+  notes        String?
+  effectiveDate DateTime
+  createdById  String
+  createdBy    user     @relation(fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+
+  stockMovement StockMovement?
+
+  @@unique([metalId, purityId])
+  @@map("opening_stock")
+}
+
+// ==================== STOCK MOVEMENT (APPEND-ONLY) ====================
+
+/// Append-only physical stock movement log.
+/// Every stock event (purchase, sale, adjustment, opening) writes ONE row here.
+/// NEVER update or delete rows in this table.
+/// Current stock = SUM of signed weights per (metalId, purityId).
+model StockMovement {
+  id              String       @id @default(cuid())
+  metalId         String
+  metal           Metal        @relation(fields: [metalId], references: [id])
+  purityId        String
+  purity          Purity       @relation(fields: [purityId], references: [id])
+  movementType    MovementType
+  /// Signed weight: positive = stock in, negative = stock out
+  weightGrams     Decimal      @db.Decimal(14, 4)
+  /// Which purchase caused this movement (if any)
+  purchaseId      String?
+  purchase        Purchase?    @relation(fields: [purchaseId], references: [id])
+  /// Which sale caused this movement (if any)
+  saleId          String?
+  sale            Sale?        @relation(fields: [saleId], references: [id])
+  /// Which adjustment caused this movement (if any)
+  adjustmentId    String?
+  adjustment      StockAdjustment? @relation(fields: [adjustmentId], references: [id])
+  /// Which opening stock record caused this movement (if any)
+  openingStockId  String?      @unique
+  openingStock    OpeningStock? @relation(fields: [openingStockId], references: [id])
+  /// User who triggered this movement
+  createdById     String
+  createdBy       user         @relation(fields: [createdById], references: [id])
+  createdAt       DateTime     @default(now())
+  /// Free-text reference note
+  reference       String?
+
+  @@index([metalId, purityId])
+  @@index([movementType])
+  @@index([createdAt])
+  @@index([purchaseId])
+  @@index([saleId])
+  @@index([adjustmentId])
+  @@map("stock_movement")
+}
+
+// ==================== PURCHASES ====================
+
+model Purchase {
+  id              String            @id @default(cuid())
+  invoiceNumber   String            @unique
+  date            DateTime
+  /// Counterparty FK (optional — if null, use supplierName inline)
+  counterpartyId  String?
+  counterparty    Counterparty?     @relation(fields: [counterpartyId], references: [id])
+  /// Denormalized name preserved for historical integrity
+  supplierName    String
+  supplierContact String?
+  metalId         String
+  metal           Metal             @relation(fields: [metalId], references: [id])
+  purityId        String
+  purity          Purity            @relation(fields: [purityId], references: [id])
+  weightGrams     Decimal           @db.Decimal(14, 4)
+  ratePerGram     Decimal           @db.Decimal(12, 4)
+  /// Server-derived: weightGrams × ratePerGram, stored for ledger reporting
+  totalAmount     Decimal           @db.Decimal(16, 2)
+  paymentMode     PaymentMode       @default(CASH)
+  notes           String?
+  status          TransactionStatus @default(DRAFT)
+  cancelReason    String?
+  cancelledAt     DateTime?
+  createdById     String
+  createdBy       user              @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  stockMovements StockMovement[]
+  auditLogs      AuditLog[]
+
+  @@index([date])
+  @@index([metalId, purityId])
+  @@index([status])
+  @@index([counterpartyId])
+  @@map("purchase")
+}
+
+// ==================== SALES ====================
+
+model Sale {
+  id              String            @id @default(cuid())
+  invoiceNumber   String            @unique
+  date            DateTime
+  /// Counterparty FK (optional — if null, use buyerName inline)
+  counterpartyId  String?
+  counterparty    Counterparty?     @relation(fields: [counterpartyId], references: [id])
+  /// Denormalized name preserved for historical integrity
+  buyerName       String
+  buyerContact    String?
+  metalId         String
+  metal           Metal             @relation(fields: [metalId], references: [id])
+  purityId        String
+  purity          Purity            @relation(fields: [purityId], references: [id])
+  weightGrams     Decimal           @db.Decimal(14, 4)
+  ratePerGram     Decimal           @db.Decimal(12, 4)
+  /// Server-derived: weightGrams × ratePerGram, stored for ledger reporting
+  totalAmount     Decimal           @db.Decimal(16, 2)
+  paymentMode     PaymentMode       @default(CASH)
+  notes           String?
+  status          TransactionStatus @default(DRAFT)
+  cancelReason    String?
+  cancelledAt     DateTime?
+  createdById     String
+  createdBy       user              @relation("SaleCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  stockMovements StockMovement[]
+  auditLogs      AuditLog[]
+
+  @@index([date])
+  @@index([metalId, purityId])
+  @@index([status])
+  @@index([counterpartyId])
+  @@map("sale")
+}
+
+// ==================== STOCK ADJUSTMENTS ====================
+
+/// Authorized stock adjustment. ADMIN-only.
+/// Creates a corresponding StockMovement entry.
+model StockAdjustment {
+  id          String              @id @default(cuid())
+  date        DateTime
+  metalId     String
+  metal       Metal               @relation(fields: [metalId], references: [id])
+  purityId    String
+  purity      Purity              @relation(fields: [purityId], references: [id])
+  direction   AdjustmentDirection
+  weightGrams Decimal             @db.Decimal(14, 4)
+  reason      String
+  notes       String?
+  status      TransactionStatus   @default(POSTED)
+  cancelReason String?
+  cancelledAt DateTime?
+  createdById String
+  createdBy   user                @relation("AdjustmentCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  stockMovements StockMovement[]
+  auditLogs      AuditLog[]
+
+  @@index([date])
+  @@index([metalId, purityId])
+  @@index([status])
+  @@map("stock_adjustment")
+}
+
+// ==================== AUDIT LOG ====================
+
+/// Immutable audit trail for all important mutations.
+/// NEVER update or delete rows in this table.
+model AuditLog {
+  id         String      @id @default(cuid())
+  action     AuditAction
+  entityType String
+  entityId   String
+  /// JSON snapshot of state before the change (null for CREATE)
+  prevState  Json?
+  /// JSON snapshot of state after the change
+  nextState  Json?
+  /// Free-text description of what happened
+  description String?
+  actorId    String
+  actor      user        @relation(fields: [actorId], references: [id])
+  createdAt  DateTime    @default(now())
+
+  /// Optional FK helpers for common entity types
+  metalId    String?
+  metal      Metal?    @relation("AuditMetal",  fields: [metalId],  references: [id])
+  purityId   String?
+  purity     Purity?   @relation("AuditPurity", fields: [purityId], references: [id])
+  purchaseId String?
+  purchase   Purchase? @relation(fields: [purchaseId], references: [id])
+  saleId     String?
+  sale       Sale?     @relation(fields: [saleId], references: [id])
+  adjustmentId String?
+  adjustment StockAdjustment? @relation(fields: [adjustmentId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+// ==================== APP SETTINGS ====================
+
+model AppSetting {
+  key   String @id
+  value String
+
+  @@map("app_setting")
+}
