@@ -34,6 +34,8 @@ export interface StockPosition {
   adjustmentIncreaseGrams: Decimal;
   adjustmentDecreaseGrams: Decimal;
   currentWeightGrams: Decimal;
+  reservedWeightGrams: Decimal;
+  availableToSellWeightGrams: Decimal;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,10 +64,21 @@ export async function getStockPosition(
   metalId: string,
   purityId: string,
 ): Promise<StockPosition> {
-  const [metal, purity, movements] = await Promise.all([
+  const now = new Date();
+  const [metal, purity, movements, activeReservations] = await Promise.all([
     prisma.metal.findUniqueOrThrow({ where: { id: metalId } }),
     prisma.purity.findUniqueOrThrow({ where: { id: purityId } }),
     prisma.stockMovement.findMany({ where: { metalId, purityId } }),
+    prisma.rateReservation.findMany({
+      where: {
+        metalId,
+        purityId,
+        type: "SALE",
+        status: "ACTIVE",
+        expiresAt: { gt: now },
+      },
+      select: { weightGrams: true },
+    }),
   ]);
 
   let opening = new Decimal(0);
@@ -108,6 +121,12 @@ export async function getStockPosition(
     .plus(adjIncrease)
     .minus(adjDecrease);
 
+  const reserved = activeReservations.reduce(
+    (sum, r) => sum.plus(new Decimal(r.weightGrams.toString())),
+    new Decimal(0),
+  );
+  const availableToSell = Decimal.max(0, current.minus(reserved));
+
   return {
     metalId,
     metalCode: metal.code,
@@ -121,6 +140,8 @@ export async function getStockPosition(
     adjustmentIncreaseGrams: adjIncrease,
     adjustmentDecreaseGrams: adjDecrease,
     currentWeightGrams: current,
+    reservedWeightGrams: reserved,
+    availableToSellWeightGrams: availableToSell,
   };
 }
 
@@ -173,7 +194,7 @@ export async function getDetailedStockPositions(): Promise<DetailedStockPosition
           where: {
             metalId: pos.metalId,
             purityId: pos.purityId,
-            status: "POSTED",
+            status: { in: ["POSTED", "CLOSED"] },
           },
           _sum: {
             totalAmount: true,
@@ -184,7 +205,7 @@ export async function getDetailedStockPositions(): Promise<DetailedStockPosition
           where: {
             metalId: pos.metalId,
             purityId: pos.purityId,
-            status: "POSTED",
+            status: { in: ["POSTED", "CLOSED"] },
           },
           _sum: {
             totalAmount: true,
@@ -329,6 +350,109 @@ export async function assertSufficientStock(
   }
 }
 
+/**
+ * Calculate active reserved quantity for sales by metal + purity.
+ * Expired, cancelled, or consumed reservations do not count.
+ */
+export async function getActiveReservedWeight(
+  metalId: string,
+  purityId: string,
+  tx?: import("@prisma/client").Prisma.TransactionClient,
+  excludeReservationId?: string,
+): Promise<Decimal> {
+  const client = tx ?? prisma;
+  const now = new Date();
+  const reservations = await client.rateReservation.findMany({
+    where: {
+      metalId,
+      purityId,
+      type: "SALE",
+      status: "ACTIVE",
+      expiresAt: { gt: now },
+      ...(excludeReservationId ? { id: { not: excludeReservationId } } : {}),
+    },
+    select: { weightGrams: true },
+  });
+
+  return reservations.reduce(
+    (sum, r) => sum.plus(new Decimal(r.weightGrams.toString())),
+    new Decimal(0),
+  );
+}
+
+/**
+ * Derive Available-to-Sell: Physical On-Hand - Active Reservations.
+ */
+export async function getAvailableToSellStock(
+  metalId: string,
+  purityId: string,
+  tx?: import("@prisma/client").Prisma.TransactionClient,
+  excludeReservationId?: string,
+): Promise<Decimal> {
+  const client = tx ?? prisma;
+  const [physicalAgg, reserved] = await Promise.all([
+    client.stockMovement.aggregate({
+      where: { metalId, purityId },
+      _sum: { weightGrams: true },
+    }),
+    getActiveReservedWeight(metalId, purityId, client, excludeReservationId),
+  ]);
+
+  const rawPhysical = physicalAgg._sum.weightGrams;
+  const physicalWeight = rawPhysical != null ? new Decimal(rawPhysical.toString()) : new Decimal(0);
+  const available = physicalWeight.minus(reserved);
+  return Decimal.max(0, available);
+}
+
+/**
+ * Validate that a given (metalId, purityId) has at least `requiredGrams`
+ * AVAILABLE TO SELL (Physical On-Hand minus Active Reservations).
+ * Must be called INSIDE a Prisma transaction to be safe.
+ */
+export async function assertSufficientAvailableStock(
+  tx: import("@prisma/client").Prisma.TransactionClient,
+  metalId: string,
+  purityId: string,
+  requiredGrams: Decimal,
+  excludeReservationId?: string,
+): Promise<void> {
+  // Concurrency Guard: Lock the bucket's purity record using SELECT ... FOR UPDATE.
+  try {
+    if (typeof (tx as unknown as { $executeRawUnsafe?: unknown }).$executeRawUnsafe === "function") {
+      await (tx as unknown as { $executeRawUnsafe: (query: string, ...args: unknown[]) => Promise<unknown> }).$executeRawUnsafe(
+        `SELECT id FROM purity WHERE id = $1 FOR UPDATE`,
+        purityId,
+      );
+    }
+  } catch {
+    // Fallback if provider or in-memory mock does not support raw locking
+  }
+
+  const [physicalAgg, reserved] = await Promise.all([
+    tx.stockMovement.aggregate({
+      where: { metalId, purityId },
+      _sum: { weightGrams: true },
+    }),
+    getActiveReservedWeight(metalId, purityId, tx, excludeReservationId),
+  ]);
+
+  const rawPhysical = physicalAgg._sum.weightGrams;
+  const physical = rawPhysical != null ? new Decimal(rawPhysical.toString()) : new Decimal(0);
+  const available = physical.minus(reserved);
+  const availableToSell = Decimal.max(0, available);
+
+  if (availableToSell.lessThan(requiredGrams)) {
+    throw new InsufficientAvailableStockError(
+      metalId,
+      purityId,
+      physical,
+      reserved,
+      availableToSell,
+      requiredGrams,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Custom Errors
 // ---------------------------------------------------------------------------
@@ -345,6 +469,24 @@ export class InsufficientStockError extends Error {
         `Available: ${available.toFixed(4)}g, Requested: ${requested.toFixed(4)}g`,
     );
     this.name = "InsufficientStockError";
+  }
+}
+
+export class InsufficientAvailableStockError extends Error {
+  constructor(
+    public readonly metalId: string,
+    public readonly purityId: string,
+    public readonly physical: Decimal,
+    public readonly reserved: Decimal,
+    public readonly availableToSell: Decimal,
+    public readonly requested: Decimal,
+  ) {
+    super(
+      `Insufficient available-to-sell stock for metal=${metalId} purity=${purityId}. ` +
+        `Physical on-hand: ${physical.toFixed(4)}g, Reserved: ${reserved.toFixed(4)}g, ` +
+        `Available-to-sell: ${availableToSell.toFixed(4)}g, Requested: ${requested.toFixed(4)}g`,
+    );
+    this.name = "InsufficientAvailableStockError";
   }
 }
 

@@ -23,7 +23,7 @@
 import Decimal from "decimal.js";
 import { prisma } from "@/lib/db/client";
 import type { Prisma, MovementType } from "@prisma/client";
-import { getAllStockPositions, getDetailedStockPositions } from "./stock-service";
+import { getDetailedStockPositions } from "./stock-service";
 
 // ---------------------------------------------------------------------------
 // Types & Interfaces
@@ -91,11 +91,16 @@ export interface PurchaseRegisterRow {
   metalName: string;
   purityId: string;
   purityLabel: string;
+  rateStatus: "FIXED" | "UNFIXED";
   weightGrams: Decimal;
-  ratePerGram: Decimal;
-  totalAmount: Decimal;
+  ratePerGram: Decimal | null;
+  totalAmount: Decimal | null;
+  rateFixedAt?: Date | null;
+  fulfilmentStatus: "PENDING" | "PARTIALLY_FULFILLED" | "FULFILLED" | "CANCELLED";
+  fulfilledWeightGrams: Decimal;
+  remainingWeightGrams: Decimal;
   paymentMode: string;
-  status: "DRAFT" | "POSTED" | "CANCELLED";
+  status: "DRAFT" | "POSTED" | "CLOSED" | "CANCELLED";
   cancelReason: string | null;
   cancelledAt: Date | null;
   notes: string | null;
@@ -107,6 +112,7 @@ export interface PurchaseRegisterSummary {
   weightedAverageRate: Decimal;
   totalPurchasesCount: number;
   postedCount: number;
+  closedCount: number;
   cancelledCount: number;
   draftCount: number;
 }
@@ -134,7 +140,7 @@ export async function getPurchaseRegisterReport(
   if (filters.counterpartyId) where.counterpartyId = filters.counterpartyId;
 
   if (filters.status && filters.status !== "ALL") {
-    where.status = filters.status as "DRAFT" | "POSTED" | "CANCELLED";
+    where.status = filters.status as "DRAFT" | "POSTED" | "CLOSED" | "CANCELLED";
   }
 
   if (filters.search && filters.search.trim()) {
@@ -151,25 +157,39 @@ export async function getPurchaseRegisterReport(
     include: {
       metal: true,
       purity: true,
+      fulfilments: {
+        where: { status: { not: "CANCELLED" } },
+      },
     },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
   });
 
   let totalWeight = new Decimal(0);
   let totalAmount = new Decimal(0);
+  let fixedWeight = new Decimal(0);
   let postedCount = 0;
+  let closedCount = 0;
   let cancelledCount = 0;
   let draftCount = 0;
 
   const rows: PurchaseRegisterRow[] = purchases.map((p) => {
     const weight = new Decimal(p.weightGrams.toString());
-    const rate = new Decimal(p.ratePerGram.toString());
-    const amount = new Decimal(p.totalAmount.toString());
+    const rate = p.ratePerGram != null ? new Decimal(p.ratePerGram.toString()) : null;
+    const amount = p.totalAmount != null ? new Decimal(p.totalAmount.toString()) : null;
+    const fulfilledWeight = p.fulfilments.reduce(
+      (sum, f) => sum.plus(new Decimal(f.weightGrams.toString())),
+      new Decimal(0),
+    );
+    const remainingWeight = weight.minus(fulfilledWeight);
 
-    if (p.status === "POSTED") {
+    if (p.status === "POSTED" || p.status === "CLOSED") {
       totalWeight = totalWeight.plus(weight);
-      totalAmount = totalAmount.plus(amount);
-      postedCount++;
+      if (amount != null) {
+        totalAmount = totalAmount.plus(amount);
+        fixedWeight = fixedWeight.plus(weight);
+      }
+      if (p.status === "POSTED") postedCount++;
+      else closedCount++;
     } else if (p.status === "CANCELLED") {
       cancelledCount++;
     } else if (p.status === "DRAFT") {
@@ -188,19 +208,24 @@ export async function getPurchaseRegisterReport(
       metalName: p.metal.name,
       purityId: p.purityId,
       purityLabel: p.purity.label,
+      rateStatus: p.rateStatus,
       weightGrams: weight,
       ratePerGram: rate,
       totalAmount: amount,
+      rateFixedAt: p.rateFixedAt,
+      fulfilmentStatus: p.fulfilmentStatus,
+      fulfilledWeightGrams: fulfilledWeight,
+      remainingWeightGrams: remainingWeight.lessThan(0) ? new Decimal(0) : remainingWeight,
       paymentMode: p.paymentMode,
-      status: p.status as "DRAFT" | "POSTED" | "CANCELLED",
+      status: p.status as "DRAFT" | "POSTED" | "CLOSED" | "CANCELLED",
       cancelReason: p.cancelReason,
       cancelledAt: p.cancelledAt,
       notes: p.notes,
     };
   });
 
-  const weightedAverageRate = totalWeight.greaterThan(0)
-    ? totalAmount.dividedBy(totalWeight).toDecimalPlaces(2)
+  const weightedAverageRate = fixedWeight.greaterThan(0)
+    ? totalAmount.dividedBy(fixedWeight).toDecimalPlaces(2)
     : new Decimal(0);
 
   return {
@@ -210,6 +235,7 @@ export async function getPurchaseRegisterReport(
       weightedAverageRate,
       totalPurchasesCount: rows.length,
       postedCount,
+      closedCount,
       cancelledCount,
       draftCount,
     },
@@ -233,11 +259,16 @@ export interface SalesRegisterRow {
   metalName: string;
   purityId: string;
   purityLabel: string;
+  rateStatus: "FIXED" | "UNFIXED";
   weightGrams: Decimal;
-  ratePerGram: Decimal;
-  totalAmount: Decimal;
+  ratePerGram: Decimal | null;
+  totalAmount: Decimal | null;
+  rateFixedAt?: Date | null;
+  fulfilmentStatus: "PENDING" | "PARTIALLY_FULFILLED" | "FULFILLED" | "CANCELLED";
+  fulfilledWeightGrams: Decimal;
+  remainingWeightGrams: Decimal;
   paymentMode: string;
-  status: "DRAFT" | "POSTED" | "CANCELLED";
+  status: "DRAFT" | "POSTED" | "CLOSED" | "CANCELLED";
   cancelReason: string | null;
   cancelledAt: Date | null;
   notes: string | null;
@@ -249,6 +280,7 @@ export interface SalesRegisterSummary {
   weightedAverageSellingRate: Decimal;
   totalSalesCount: number;
   postedCount: number;
+  closedCount: number;
   cancelledCount: number;
   draftCount: number;
 }
@@ -276,7 +308,7 @@ export async function getSalesRegisterReport(
   if (filters.counterpartyId) where.counterpartyId = filters.counterpartyId;
 
   if (filters.status && filters.status !== "ALL") {
-    where.status = filters.status as "DRAFT" | "POSTED" | "CANCELLED";
+    where.status = filters.status as "DRAFT" | "POSTED" | "CLOSED" | "CANCELLED";
   }
 
   if (filters.search && filters.search.trim()) {
@@ -293,25 +325,39 @@ export async function getSalesRegisterReport(
     include: {
       metal: true,
       purity: true,
+      fulfilments: {
+        where: { status: { not: "CANCELLED" } },
+      },
     },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
   });
 
   let totalWeight = new Decimal(0);
   let totalAmount = new Decimal(0);
+  let fixedWeight = new Decimal(0);
   let postedCount = 0;
+  let closedCount = 0;
   let cancelledCount = 0;
   let draftCount = 0;
 
   const rows: SalesRegisterRow[] = sales.map((s) => {
     const weight = new Decimal(s.weightGrams.toString());
-    const rate = new Decimal(s.ratePerGram.toString());
-    const amount = new Decimal(s.totalAmount.toString());
+    const rate = s.ratePerGram != null ? new Decimal(s.ratePerGram.toString()) : null;
+    const amount = s.totalAmount != null ? new Decimal(s.totalAmount.toString()) : null;
+    const fulfilledWeight = s.fulfilments.reduce(
+      (sum, f) => sum.plus(new Decimal(f.weightGrams.toString())),
+      new Decimal(0),
+    );
+    const remainingWeight = weight.minus(fulfilledWeight);
 
-    if (s.status === "POSTED") {
+    if (s.status === "POSTED" || s.status === "CLOSED") {
       totalWeight = totalWeight.plus(weight);
-      totalAmount = totalAmount.plus(amount);
-      postedCount++;
+      if (amount != null) {
+        totalAmount = totalAmount.plus(amount);
+        fixedWeight = fixedWeight.plus(weight);
+      }
+      if (s.status === "POSTED") postedCount++;
+      else closedCount++;
     } else if (s.status === "CANCELLED") {
       cancelledCount++;
     } else if (s.status === "DRAFT") {
@@ -330,19 +376,24 @@ export async function getSalesRegisterReport(
       metalName: s.metal.name,
       purityId: s.purityId,
       purityLabel: s.purity.label,
+      rateStatus: s.rateStatus,
       weightGrams: weight,
       ratePerGram: rate,
       totalAmount: amount,
+      rateFixedAt: s.rateFixedAt,
+      fulfilmentStatus: s.fulfilmentStatus,
+      fulfilledWeightGrams: fulfilledWeight,
+      remainingWeightGrams: remainingWeight.lessThan(0) ? new Decimal(0) : remainingWeight,
       paymentMode: s.paymentMode,
-      status: s.status as "DRAFT" | "POSTED" | "CANCELLED",
+      status: s.status as "DRAFT" | "POSTED" | "CLOSED" | "CANCELLED",
       cancelReason: s.cancelReason,
       cancelledAt: s.cancelledAt,
       notes: s.notes,
     };
   });
 
-  const weightedAverageSellingRate = totalWeight.greaterThan(0)
-    ? totalAmount.dividedBy(totalWeight).toDecimalPlaces(2)
+  const weightedAverageSellingRate = fixedWeight.greaterThan(0)
+    ? totalAmount.dividedBy(fixedWeight).toDecimalPlaces(2)
     : new Decimal(0);
 
   return {
@@ -352,6 +403,7 @@ export async function getSalesRegisterReport(
       weightedAverageSellingRate,
       totalSalesCount: rows.length,
       postedCount,
+      closedCount,
       cancelledCount,
       draftCount,
     },
@@ -376,6 +428,8 @@ export interface CurrentStockReportRow {
   adjustmentIncreaseGrams: Decimal;
   adjustmentDecreaseGrams: Decimal;
   availableWeightGrams: Decimal;
+  reservedWeightGrams: Decimal;
+  availableToSellWeightGrams: Decimal;
   averagePurchaseRate: Decimal;
   totalPurchaseValue: Decimal;
   averageSellingRate: Decimal;
@@ -387,6 +441,8 @@ export interface CurrentStockReportSummary {
   totalGoldGrams: Decimal;
   totalSilverGrams: Decimal;
   totalInventoryGrams: Decimal;
+  totalReservedGrams: Decimal;
+  totalAvailableToSellGrams: Decimal;
   totalPurchaseValuation: Decimal;
   totalSalesRealized: Decimal;
   activeBucketsCount: number;
@@ -405,6 +461,8 @@ export async function getCurrentStockReport(
   let totalGold = new Decimal(0);
   let totalSilver = new Decimal(0);
   let totalInventory = new Decimal(0);
+  let totalReserved = new Decimal(0);
+  let totalAvailableToSell = new Decimal(0);
   let totalPurchaseVal = new Decimal(0);
   let totalSalesVal = new Decimal(0);
 
@@ -423,15 +481,20 @@ export async function getCurrentStockReport(
   });
 
   const rows: CurrentStockReportRow[] = filtered.map((pos) => {
-    const available = pos.currentWeightGrams;
-    totalInventory = totalInventory.plus(available);
+    const physicalOnHand = pos.currentWeightGrams;
+    const reserved = pos.reservedWeightGrams;
+    const availableToSell = pos.availableToSellWeightGrams;
+
+    totalInventory = totalInventory.plus(physicalOnHand);
+    totalReserved = totalReserved.plus(reserved);
+    totalAvailableToSell = totalAvailableToSell.plus(availableToSell);
     totalPurchaseVal = totalPurchaseVal.plus(pos.totalPurchaseValue);
     totalSalesVal = totalSalesVal.plus(pos.totalSalesValue);
 
     if (pos.metalCode.toUpperCase() === "GOLD") {
-      totalGold = totalGold.plus(available);
+      totalGold = totalGold.plus(physicalOnHand);
     } else if (pos.metalCode.toUpperCase() === "SILVER") {
-      totalSilver = totalSilver.plus(available);
+      totalSilver = totalSilver.plus(physicalOnHand);
     }
 
     return {
@@ -446,7 +509,9 @@ export async function getCurrentStockReport(
       soldWeightGrams: pos.soldWeightGrams,
       adjustmentIncreaseGrams: pos.adjustmentIncreaseGrams,
       adjustmentDecreaseGrams: pos.adjustmentDecreaseGrams,
-      availableWeightGrams: available,
+      availableWeightGrams: physicalOnHand,
+      reservedWeightGrams: reserved,
+      availableToSellWeightGrams: availableToSell,
       averagePurchaseRate: pos.averagePurchaseRate,
       totalPurchaseValue: pos.totalPurchaseValue,
       averageSellingRate: pos.averageSellingRate,
@@ -460,6 +525,8 @@ export async function getCurrentStockReport(
       totalGoldGrams: totalGold,
       totalSilverGrams: totalSilver,
       totalInventoryGrams: totalInventory,
+      totalReservedGrams: totalReserved,
+      totalAvailableToSellGrams: totalAvailableToSell,
       totalPurchaseValuation: totalPurchaseVal,
       totalSalesRealized: totalSalesVal,
       activeBucketsCount: rows.length,
@@ -553,7 +620,7 @@ export async function getSupplierWisePurchaseReport(
   for (const p of purchases) {
     const key = p.supplierName.trim().toLowerCase();
     const weight = new Decimal(p.weightGrams.toString());
-    const amount = new Decimal(p.totalAmount.toString());
+    const amount = p.totalAmount != null ? new Decimal(p.totalAmount.toString()) : new Decimal(0);
 
     overallWeight = overallWeight.plus(weight);
     overallAmount = overallAmount.plus(amount);
@@ -694,7 +761,7 @@ export async function getBuyerWiseSalesReport(
   for (const s of sales) {
     const key = s.buyerName.trim().toLowerCase();
     const weight = new Decimal(s.weightGrams.toString());
-    const amount = new Decimal(s.totalAmount.toString());
+    const amount = s.totalAmount != null ? new Decimal(s.totalAmount.toString()) : new Decimal(0);
 
     overallWeight = overallWeight.plus(weight);
     overallAmount = overallAmount.plus(amount);
@@ -883,7 +950,7 @@ export async function getPurchaseVsSalesReport(
   // Accumulate Purchases
   for (const p of purchases) {
     const w = new Decimal(p.weightGrams.toString());
-    const a = new Decimal(p.totalAmount.toString());
+    const a = p.totalAmount != null ? new Decimal(p.totalAmount.toString()) : new Decimal(0);
     totalPurchaseWeight = totalPurchaseWeight.plus(w);
     totalPurchaseAmount = totalPurchaseAmount.plus(a);
 
@@ -907,7 +974,7 @@ export async function getPurchaseVsSalesReport(
   // Accumulate Sales
   for (const s of sales) {
     const w = new Decimal(s.weightGrams.toString());
-    const a = new Decimal(s.totalAmount.toString());
+    const a = s.totalAmount != null ? new Decimal(s.totalAmount.toString()) : new Decimal(0);
     totalSalesWeight = totalSalesWeight.plus(w);
     totalSalesAmount = totalSalesAmount.plus(a);
 
@@ -1076,6 +1143,7 @@ export async function getBullionProfitReport(
   >();
 
   for (const p of allPurchases) {
+    if (p.totalAmount == null) continue;
     const key = `${p.metalId}_${p.purityId}`;
     const existing = bucketCostMap.get(key) ?? {
       totalCost: new Decimal(0),
@@ -1093,6 +1161,7 @@ export async function getBullionProfitReport(
   >();
 
   for (const s of periodSales) {
+    if (s.totalAmount == null) continue;
     const key = `${s.metalId}_${s.purityId}`;
     const existing = bucketSalesMap.get(key) ?? {
       metalId: s.metalId,
@@ -1252,6 +1321,7 @@ export async function getTransactionHistoryReport(
       sale: { select: { id: true, invoiceNumber: true, status: true, buyerName: true } },
       adjustment: { select: { id: true, reason: true, status: true, direction: true } },
       openingStock: { select: { id: true, effectiveDate: true } },
+      fulfilment: { select: { id: true, fulfilmentNumber: true, type: true } },
     },
     orderBy: { createdAt: "desc" },
     take: filters.limit ?? 250,
@@ -1277,13 +1347,15 @@ export async function getTransactionHistoryReport(
     let relatedInvoiceOrReason: string | null = null;
     let status = "COMPLETED";
 
+    const deliveryTag = m.fulfilment ? ` [${m.fulfilment.fulfilmentNumber}]` : "";
+
     if (m.purchase) {
       relatedType = "PURCHASE";
-      relatedInvoiceOrReason = `Invoice: ${m.purchase.invoiceNumber} (${m.purchase.supplierName})`;
+      relatedInvoiceOrReason = `Invoice: ${m.purchase.invoiceNumber} (${m.purchase.supplierName})${deliveryTag}`;
       status = m.purchase.status;
     } else if (m.sale) {
       relatedType = "SALE";
-      relatedInvoiceOrReason = `Invoice: ${m.sale.invoiceNumber} (${m.sale.buyerName})`;
+      relatedInvoiceOrReason = `Invoice: ${m.sale.invoiceNumber} (${m.sale.buyerName})${deliveryTag}`;
       status = m.sale.status;
     } else if (m.adjustment) {
       relatedType = "ADJUSTMENT";
@@ -1326,3 +1398,13 @@ export async function getTransactionHistoryReport(
     rows,
   };
 }
+
+// ---------------------------------------------------------------------------
+// 9. Fulfilment Report (Step 14)
+// ---------------------------------------------------------------------------
+
+export {
+  getFulfilmentReport,
+  type FulfilmentReportFilters,
+  type FulfilmentReportRow,
+} from "./fulfilment-service";

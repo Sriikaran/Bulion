@@ -31,6 +31,7 @@ enum MetalType {
 enum TransactionStatus {
   DRAFT
   POSTED
+  CLOSED
   CANCELLED
 }
 
@@ -74,6 +75,51 @@ enum AuditAction {
   POST
 }
 
+enum PaymentType {
+  PAYMENT
+  RECEIPT
+}
+
+enum PaymentStatus {
+  COMPLETED
+  CANCELLED
+}
+
+enum SettlementStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+enum RateStatus {
+  FIXED
+  UNFIXED
+}
+
+enum FulfilmentStatus {
+  PENDING
+  PARTIALLY_FULFILLED
+  FULFILLED
+  CANCELLED
+}
+
+enum FulfilmentType {
+  PURCHASE
+  SALE
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CONSUMED
+  EXPIRED
+  CANCELLED
+}
+
+enum ReservationType {
+  PURCHASE
+  SALE
+}
+
 // ==================== BETTER AUTH TABLES ====================
 
 model user {
@@ -98,6 +144,21 @@ model user {
   stockMovements     StockMovement[]
   auditLogs          AuditLog[]
   openingStocks      OpeningStock[]
+  paymentsCreated    Payment[]         @relation("PaymentCreatedBy")
+  paymentsCancelled  Payment[]         @relation("PaymentCancelledBy")
+  purchasesRateFixed Purchase[]        @relation("PurchaseRateFixedBy")
+  salesRateFixed     Sale[]            @relation("SaleRateFixedBy")
+  purchasesClosed    Purchase[]        @relation("PurchaseClosedBy")
+  salesClosed        Sale[]            @relation("SaleClosedBy")
+  fulfilmentsCreated Fulfilment[]      @relation("FulfilmentCreatedBy")
+  reservationsCreated   RateReservation[] @relation("ReservationCreatedBy")
+  reservationsConsumed  RateReservation[] @relation("ReservationConsumedBy")
+  reservationsCancelled RateReservation[] @relation("ReservationCancelledBy")
+  marketRatesCreated    MarketRate[]      @relation("MarketRateCreatedBy")
+  marginRulesCreated    MarginRule[]      @relation("MarginRuleCreatedBy")
+  quotesCreated         Quote[]           @relation("QuoteCreatedBy")
+  quotesConsumed        Quote[]           @relation("QuoteConsumedBy")
+  quotesCancelled       Quote[]           @relation("QuoteCancelledBy")
 
   @@map("user")
 }
@@ -166,6 +227,10 @@ model Metal {
   stockMovements StockMovement[]
   openingStocks  OpeningStock[]
   auditLogs      AuditLog[]        @relation("AuditMetal")
+  rateReservations RateReservation[]
+  marketRates    MarketRate[]
+  marginRules    MarginRule[]
+  quotes         Quote[]
 
   @@map("metal")
 }
@@ -193,6 +258,10 @@ model Purity {
   stockMovements StockMovement[]
   openingStocks  OpeningStock[]
   auditLogs      AuditLog[]        @relation("AuditPurity")
+  rateReservations RateReservation[]
+  marketRates    MarketRate[]
+  marginRules    MarginRule[]
+  quotes         Quote[]
 
   @@unique([metalId, label])
   @@index([metalId])
@@ -215,6 +284,8 @@ model Counterparty {
 
   purchases Purchase[]
   sales     Sale[]
+  payments  Payment[]
+  rateReservations RateReservation[]
 
   @@index([type])
   @@index([isActive])
@@ -278,12 +349,17 @@ model StockMovement {
   /// Free-text reference note
   reference       String?
 
+  /// Which physical fulfilment caused this movement (if any)
+  fulfilmentId    String?
+  fulfilment      Fulfilment?  @relation(fields: [fulfilmentId], references: [id])
+
   @@index([metalId, purityId])
   @@index([movementType])
   @@index([createdAt])
   @@index([purchaseId])
   @@index([saleId])
   @@index([adjustmentId])
+  @@index([fulfilmentId])
   @@map("stock_movement")
 }
 
@@ -303,10 +379,14 @@ model Purchase {
   metal           Metal             @relation(fields: [metalId], references: [id])
   purityId        String
   purity          Purity            @relation(fields: [purityId], references: [id])
+  rateStatus      RateStatus        @default(FIXED)
   weightGrams     Decimal           @db.Decimal(14, 4)
-  ratePerGram     Decimal           @db.Decimal(12, 4)
-  /// Server-derived: weightGrams × ratePerGram, stored for ledger reporting
-  totalAmount     Decimal           @db.Decimal(16, 2)
+  ratePerGram     Decimal?          @db.Decimal(12, 4)
+  /// Server-derived: weightGrams × ratePerGram, stored for ledger reporting (null when UNFIXED)
+  totalAmount     Decimal?          @db.Decimal(16, 2)
+  rateFixedAt     DateTime?
+  rateFixedById   String?
+  rateFixedBy     user?             @relation("PurchaseRateFixedBy", fields: [rateFixedById], references: [id])
   paymentMode     PaymentMode       @default(CASH)
   notes           String?
   status          TransactionStatus @default(DRAFT)
@@ -317,13 +397,29 @@ model Purchase {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
+  paymentStatus    SettlementStatus  @default(UNPAID)
+  fulfilmentStatus FulfilmentStatus  @default(PENDING)
+
+  quoteId         String?           @unique
+  quote           Quote?            @relation("PurchaseQuote", fields: [quoteId], references: [id])
+  closedAt        DateTime?
+  closedById      String?
+  closedBy        user?             @relation("PurchaseClosedBy", fields: [closedById], references: [id])
+
   stockMovements StockMovement[]
   auditLogs      AuditLog[]
+  payments       Payment[]
+  fulfilments    Fulfilment[]
+  rateReservations RateReservation[]
 
   @@index([date])
   @@index([metalId, purityId])
   @@index([status])
+  @@index([paymentStatus])
+  @@index([rateStatus])
+  @@index([fulfilmentStatus])
   @@index([counterpartyId])
+  @@index([quoteId])
   @@map("purchase")
 }
 
@@ -343,10 +439,14 @@ model Sale {
   metal           Metal             @relation(fields: [metalId], references: [id])
   purityId        String
   purity          Purity            @relation(fields: [purityId], references: [id])
+  rateStatus      RateStatus        @default(FIXED)
   weightGrams     Decimal           @db.Decimal(14, 4)
-  ratePerGram     Decimal           @db.Decimal(12, 4)
-  /// Server-derived: weightGrams × ratePerGram, stored for ledger reporting
-  totalAmount     Decimal           @db.Decimal(16, 2)
+  ratePerGram     Decimal?          @db.Decimal(12, 4)
+  /// Server-derived: weightGrams × ratePerGram, stored for ledger reporting (null when UNFIXED)
+  totalAmount     Decimal?          @db.Decimal(16, 2)
+  rateFixedAt     DateTime?
+  rateFixedById   String?
+  rateFixedBy     user?             @relation("SaleRateFixedBy", fields: [rateFixedById], references: [id])
   paymentMode     PaymentMode       @default(CASH)
   notes           String?
   status          TransactionStatus @default(DRAFT)
@@ -357,13 +457,29 @@ model Sale {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
+  paymentStatus    SettlementStatus  @default(UNPAID)
+  fulfilmentStatus FulfilmentStatus  @default(PENDING)
+
+  quoteId         String?           @unique
+  quote           Quote?            @relation("SaleQuote", fields: [quoteId], references: [id])
+  closedAt        DateTime?
+  closedById      String?
+  closedBy        user?             @relation("SaleClosedBy", fields: [closedById], references: [id])
+
   stockMovements StockMovement[]
   auditLogs      AuditLog[]
+  payments       Payment[]
+  fulfilments    Fulfilment[]
+  rateReservations RateReservation[]
 
   @@index([date])
   @@index([metalId, purityId])
   @@index([status])
+  @@index([paymentStatus])
+  @@index([rateStatus])
+  @@index([fulfilmentStatus])
   @@index([counterpartyId])
+  @@index([quoteId])
   @@map("sale")
 }
 
@@ -429,11 +545,178 @@ model AuditLog {
   sale       Sale?     @relation(fields: [saleId], references: [id])
   adjustmentId String?
   adjustment StockAdjustment? @relation(fields: [adjustmentId], references: [id])
+  paymentId    String?
+  payment      Payment?         @relation(fields: [paymentId], references: [id])
+  fulfilmentId String?
+  fulfilment   Fulfilment?      @relation(fields: [fulfilmentId], references: [id])
+  reservationId String?
+  reservation   RateReservation? @relation(fields: [reservationId], references: [id])
+  marketRateId  String?
+  marketRate    MarketRate?      @relation(fields: [marketRateId], references: [id])
+  marginRuleId  String?
+  marginRule    MarginRule?      @relation(fields: [marginRuleId], references: [id])
+  quoteId       String?
+  quote         Quote?           @relation(fields: [quoteId], references: [id])
 
   @@index([entityType, entityId])
   @@index([actorId])
   @@index([createdAt])
+  @@index([paymentId])
+  @@index([fulfilmentId])
+  @@index([reservationId])
+  @@index([marketRateId])
+  @@index([marginRuleId])
+  @@index([quoteId])
   @@map("audit_log")
+}
+
+// ==================== FINANCIAL SETTLEMENT ====================
+
+/// Financial settlement record representing actual money movement.
+/// PAYMENT = outward payment to supplier, reduces purchase payable.
+/// RECEIPT = inward receipt from buyer, reduces sale receivable.
+model Payment {
+  id              String         @id @default(cuid())
+  /// Human-readable voucher reference, e.g. "PAY-20261003-ABCD" or "RCP-20261003-ABCD"
+  paymentNumber   String         @unique
+  /// Direction: PAYMENT (to supplier) or RECEIPT (from customer)
+  type            PaymentType
+  date            DateTime
+  amount          Decimal        @db.Decimal(16, 2)
+  paymentMode     PaymentMode    @default(CASH)
+  /// External instrument / bank reference (UTR, Cheque no, UPI transaction ID)
+  referenceNumber String?
+  notes           String?
+  status          PaymentStatus  @default(COMPLETED)
+  cancelReason    String?
+  cancelledAt     DateTime?
+  cancelledById   String?
+  cancelledBy     user?          @relation("PaymentCancelledBy", fields: [cancelledById], references: [id])
+
+  /// Counterparty associated with this financial transaction
+  counterpartyId  String?
+  counterparty    Counterparty?  @relation(fields: [counterpartyId], references: [id])
+
+  /// Associated purchase (for PAYMENT type)
+  purchaseId      String?
+  purchase        Purchase?      @relation(fields: [purchaseId], references: [id])
+
+  /// Associated sale (for RECEIPT type)
+  saleId          String?
+  sale            Sale?          @relation(fields: [saleId], references: [id])
+
+  createdById     String
+  createdBy       user           @relation("PaymentCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  auditLogs       AuditLog[]
+
+  @@index([date])
+  @@index([type])
+  @@index([status])
+  @@index([counterpartyId])
+  @@index([purchaseId])
+  @@index([saleId])
+  @@map("payment")
+}
+
+// ==================== PHYSICAL FULFILMENT ====================
+
+/// Physical fulfilment record representing physical delivery of bullion.
+/// StockMovement is created ONLY when a fulfilment is recorded.
+model Fulfilment {
+  id               String           @id @default(cuid())
+  /// Unique voucher number, e.g. "FUL-PUR-001-1" or "FUL-SAL-001-1"
+  fulfilmentNumber String           @unique
+  type             FulfilmentType
+  status           FulfilmentStatus @default(FULFILLED)
+  weightGrams      Decimal          @db.Decimal(14, 4)
+  fulfilledAt      DateTime         @default(now())
+  notes            String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  purchaseId       String?
+  purchase         Purchase?        @relation(fields: [purchaseId], references: [id])
+
+  saleId           String?
+  sale             Sale?            @relation(fields: [saleId], references: [id])
+
+  fulfilledById    String
+  fulfilledBy      user             @relation("FulfilmentCreatedBy", fields: [fulfilledById], references: [id])
+
+  stockMovements   StockMovement[]
+  auditLogs        AuditLog[]
+
+  @@index([type])
+  @@index([status])
+  @@index([purchaseId])
+  @@index([saleId])
+  @@index([fulfilledAt])
+  @@map("fulfilment")
+}
+
+// ==================== RATE RESERVATIONS (V3.3) ====================
+
+/// Rate reservation / rate block allowing temporary reservation of rate & quantity before fixing.
+/// Does NOT affect physical stock or financial settlements.
+model RateReservation {
+  id                  String             @id @default(cuid())
+  reservationNumber   String             @unique
+  type                ReservationType
+  status              ReservationStatus  @default(ACTIVE)
+  weightGrams         Decimal            @db.Decimal(14, 4)
+  reservedRatePerGram Decimal            @db.Decimal(12, 4)
+  reservedAmount      Decimal            @db.Decimal(16, 2)
+  reservedAt          DateTime           @default(now())
+  expiresAt           DateTime
+  consumedAt          DateTime?
+  cancelledAt         DateTime?
+  expiredAt           DateTime?
+  notes               String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  metalId             String
+  metal               Metal              @relation(fields: [metalId], references: [id])
+
+  purityId            String
+  purity              Purity             @relation(fields: [purityId], references: [id])
+
+  purchaseId          String?
+  purchase            Purchase?          @relation(fields: [purchaseId], references: [id])
+
+  saleId              String?
+  sale                Sale?              @relation(fields: [saleId], references: [id])
+
+  counterpartyId      String?
+  counterparty        Counterparty?      @relation(fields: [counterpartyId], references: [id])
+
+  referenceRatePerGram Decimal?          @db.Decimal(14, 2)
+  marginType          MarginType?
+  marginValue         Decimal?           @db.Decimal(14, 4)
+
+  createdById         String
+  createdBy           user               @relation("ReservationCreatedBy", fields: [createdById], references: [id])
+
+  consumedById        String?
+  consumedBy          user?              @relation("ReservationConsumedBy", fields: [consumedById], references: [id])
+
+  cancelledById       String?
+  cancelledBy         user?              @relation("ReservationCancelledBy", fields: [cancelledById], references: [id])
+
+  auditLogs           AuditLog[]
+  quote               Quote?
+
+  @@index([type])
+  @@index([status])
+  @@index([purchaseId])
+  @@index([saleId])
+  @@index([counterpartyId])
+  @@index([metalId, purityId])
+  @@index([expiresAt])
+  @@map("rate_reservation")
 }
 
 // ==================== APP SETTINGS ====================
@@ -443,4 +726,138 @@ model AppSetting {
   value String
 
   @@map("app_setting")
+}
+
+// ==================== MARKET REFERENCE RATES (V3.4) ====================
+
+/// Market Reference Rate for precious metals (Gold & Silver per gram).
+/// Reference only for quoting and operational baselines — does NOT mutate historical or active deal rates.
+model MarketRate {
+  id            String    @id @default(cuid())
+  metalId       String
+  purityId      String
+  unit          String    @default("GRAM")
+  ratePerGram   Decimal   @db.Decimal(14, 2)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  source        String?
+  notes         String?
+  createdById   String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  metal         Metal     @relation(fields: [metalId], references: [id])
+  purity        Purity    @relation(fields: [purityId], references: [id])
+  createdBy     user      @relation("MarketRateCreatedBy", fields: [createdById], references: [id])
+  auditLogs     AuditLog[]
+  quotes        Quote[]
+
+  @@index([metalId, purityId, effectiveFrom])
+  @@index([effectiveFrom])
+  @@index([effectiveTo])
+  @@map("market_rate")
+}
+
+// ==================== MARGIN & QUOTING (V3.5) ====================
+
+enum QuoteDirection {
+  BUY
+  SELL
+}
+
+enum MarginType {
+  PERCENTAGE
+  FIXED_PER_GRAM
+}
+
+enum QuoteStatus {
+  ACTIVE
+  EXPIRED
+  CONSUMED
+  CANCELLED
+}
+
+/// Margin rule per (Metal × Purity × Direction).
+/// Used by Quoting Engine to propose commercial transaction quotes.
+model MarginRule {
+  id            String         @id @default(cuid())
+  metalId       String
+  purityId      String
+  direction     QuoteDirection
+  marginType    MarginType
+  marginValue   Decimal        @db.Decimal(14, 4)
+  isActive      Boolean        @default(true)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  notes         String?
+  createdById   String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  metal     Metal      @relation(fields: [metalId], references: [id])
+  purity    Purity     @relation(fields: [purityId], references: [id])
+  createdBy user       @relation("MarginRuleCreatedBy", fields: [createdById], references: [id])
+  quotes    Quote[]
+  auditLogs AuditLog[]
+
+  @@index([metalId, purityId, direction, effectiveFrom])
+  @@index([effectiveFrom])
+  @@index([effectiveTo])
+  @@index([isActive])
+  @@map("margin_rule")
+}
+
+/// Commercial quote calculated from Market Reference Rate + Margin Rule.
+/// Pure calculated snapshot — never mutates inventory, settlements, or historical transactions.
+model Quote {
+  id                      String          @id @default(cuid())
+  quoteNumber             String          @unique
+  direction               QuoteDirection
+  metalId                 String
+  purityId                String
+  unit                    String          @default("GRAM")
+  weightGrams             Decimal         @db.Decimal(14, 4)
+  marketRateId            String
+  referenceRatePerGram    Decimal         @db.Decimal(14, 2)
+  marketRateEffectiveFrom DateTime
+  marginRuleId            String
+  marginType              MarginType
+  marginValue             Decimal         @db.Decimal(14, 4)
+  marginPerGram           Decimal         @db.Decimal(14, 4)
+  quotedRatePerGram       Decimal         @db.Decimal(14, 2)
+  quotedAmount            Decimal         @db.Decimal(16, 2)
+  status                  QuoteStatus     @default(ACTIVE)
+  validUntil              DateTime
+  notes                   String?
+
+  rateReservationId       String?         @unique
+  rateReservation         RateReservation? @relation(fields: [rateReservationId], references: [id])
+
+  purchase                Purchase?        @relation("PurchaseQuote")
+  sale                    Sale?            @relation("SaleQuote")
+
+  createdById             String
+  createdBy               user            @relation("QuoteCreatedBy", fields: [createdById], references: [id])
+  consumedById            String?
+  consumedBy              user?           @relation("QuoteConsumedBy", fields: [consumedById], references: [id])
+  consumedAt              DateTime?
+  cancelledById           String?
+  cancelledBy             user?           @relation("QuoteCancelledBy", fields: [cancelledById], references: [id])
+  cancelledAt             DateTime?
+
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+
+  metal                   Metal           @relation(fields: [metalId], references: [id])
+  purity                  Purity          @relation(fields: [purityId], references: [id])
+  marketRate              MarketRate      @relation(fields: [marketRateId], references: [id])
+  marginRule              MarginRule      @relation(fields: [marginRuleId], references: [id])
+  auditLogs               AuditLog[]
+
+  @@index([direction])
+  @@index([status])
+  @@index([metalId, purityId])
+  @@index([validUntil])
+  @@index([createdAt])
+  @@map("quote")
 }

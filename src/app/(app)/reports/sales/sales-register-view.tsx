@@ -24,8 +24,8 @@ export function SalesRegisterView({ report }: SalesRegisterViewProps) {
       { header: "Metal", accessor: (r) => `${r.metalName} (${r.metalCode})` },
       { header: "Purity", accessor: (r) => r.purityLabel },
       { header: "Weight (g)", accessor: (r) => r.weightGrams.toString() },
-      { header: "Selling Rate / g", accessor: (r) => r.ratePerGram.toString() },
-      { header: "Total Amount (INR)", accessor: (r) => r.totalAmount.toString() },
+      { header: "Selling Rate / g", accessor: (r) => r.ratePerGram != null ? r.ratePerGram.toString() : "UNFIXED" },
+      { header: "Total Amount (INR)", accessor: (r) => r.totalAmount != null ? r.totalAmount.toString() : "PENDING" },
       { header: "Payment Mode", accessor: (r) => r.paymentMode },
       { header: "Status", accessor: (r) => r.status },
       { header: "Cancel Reason", accessor: (r) => r.cancelReason ?? "" },
@@ -143,10 +143,22 @@ export function SalesRegisterView({ report }: SalesRegisterViewProps) {
                         {formatGrams(row.weightGrams.toString())}
                       </td>
                       <td className="py-3 px-4 text-right font-mono">
-                        {formatCurrency(row.ratePerGram.toString())}
+                        {row.ratePerGram != null ? (
+                          formatCurrency(row.ratePerGram.toString())
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                            UNFIXED
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-right font-mono font-extrabold text-[#C59A58]">
-                        {formatCurrency(row.totalAmount.toString())}
+                        {row.totalAmount != null ? (
+                          formatCurrency(row.totalAmount.toString())
+                        ) : (
+                          <span className="text-[11px] text-[var(--text-muted)] italic font-normal">
+                            Pending fixing
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-4">
                         <span className="text-[10px] px-2 py-0.5 rounded font-mono font-semibold bg-[var(--bg-input)] border border-[var(--border-primary)]">

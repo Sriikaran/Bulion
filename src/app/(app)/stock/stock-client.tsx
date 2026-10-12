@@ -33,6 +33,8 @@ interface StockPositionRow {
   adjustmentIncreaseGrams: string;
   adjustmentDecreaseGrams: string;
   currentWeightGrams: string;
+  reservedWeightGrams?: string;
+  availableToSellWeightGrams?: string;
   averagePurchaseRate: string;
   totalPurchaseValue: string;
   averageSellingRate: string;
@@ -246,8 +248,14 @@ export function StockClient({
                 <th className="py-3 px-3 text-right">Sold</th>
                 <th className="py-3 px-3 text-right">Adj In</th>
                 <th className="py-3 px-3 text-right">Adj Out</th>
-                <th className="py-3 px-4 text-right bg-[#C59A58]/10 text-[#966727] dark:text-[#E4BE85] font-bold">
-                  Available
+                <th className="py-3 px-3 text-right bg-[#C59A58]/10 text-[#966727] dark:text-[#E4BE85] font-bold">
+                  On-Hand
+                </th>
+                <th className="py-3 px-3 text-right text-amber-500 font-semibold">
+                  Reserved
+                </th>
+                <th className="py-3 px-4 text-right bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold">
+                  Avail to Sell
                 </th>
                 <th className="py-3 px-3 text-right">Avg Pur. Rate</th>
                 <th className="py-3 px-3 text-right">Purchase Val</th>
@@ -259,13 +267,17 @@ export function StockClient({
             <tbody className="divide-y divide-[var(--border-primary)]">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="py-12 text-center text-[var(--text-muted)]">
+                  <td colSpan={15} className="py-12 text-center text-[var(--text-muted)]">
                     No stock buckets found
                   </td>
                 </tr>
               ) : (
                 filtered.map((pos) => {
                   const currentGrams = parseFloat(pos.currentWeightGrams) || 0;
+                  const reservedGrams = parseFloat(pos.reservedWeightGrams || "0") || 0;
+                  const availToSellGrams = pos.availableToSellWeightGrams != null
+                    ? parseFloat(pos.availableToSellWeightGrams)
+                    : currentGrams - reservedGrams;
                   return (
                     <tr
                       key={`${pos.metalId}_${pos.purityId}`}
@@ -295,8 +307,14 @@ export function StockClient({
                       <td className="py-3 px-3 text-right font-mono text-[var(--text-secondary)]">
                         -{formatGrams(pos.adjustmentDecreaseGrams)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono font-bold text-sm bg-[#C59A58]/10 text-[#966727] dark:text-[#E4BE85]">
+                      <td className="py-3 px-3 text-right font-mono font-bold bg-[#C59A58]/10 text-[#966727] dark:text-[#E4BE85]">
                         {formatGrams(pos.currentWeightGrams)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono font-semibold text-amber-500">
+                        {reservedGrams > 0 ? `${formatGrams(reservedGrams.toString())}` : "—"}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-bold text-sm bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                        {formatGrams(availToSellGrams.toString())}
                       </td>
                       <td className="py-3 px-3 text-right font-mono text-[var(--text-secondary)]">
                         {parseFloat(pos.averagePurchaseRate) > 0

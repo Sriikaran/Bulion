@@ -6,10 +6,12 @@ import {
   createPurchase,
   postPurchase,
   cancelPurchase,
+  fixPurchaseRate,
 } from "@/lib/services/purchase-service";
 import {
   CreatePurchaseSchema,
   CancelTransactionSchema,
+  FixRateSchema,
 } from "@/lib/validations/purchase";
 import { sanitizeErrorMessage } from "@/lib/utils/errors";
 import { serializeForClient } from "@/lib/utils/serialize";
@@ -28,6 +30,7 @@ export async function createPurchaseDraftAction(formData: unknown) {
       metalId: parsed.metalId,
       purityId: parsed.purityId,
       weightGrams: parsed.weightGrams,
+      rateStatus: parsed.rateStatus,
       ratePerGram: parsed.ratePerGram,
       paymentMode: parsed.paymentMode,
       notes: parsed.notes,
@@ -72,6 +75,7 @@ export async function createAndPostPurchaseAction(formData: unknown) {
       metalId: parsed.metalId,
       purityId: parsed.purityId,
       weightGrams: parsed.weightGrams,
+      rateStatus: parsed.rateStatus,
       ratePerGram: parsed.ratePerGram,
       paymentMode: parsed.paymentMode,
       notes: parsed.notes,
@@ -90,6 +94,32 @@ export async function createAndPostPurchaseAction(formData: unknown) {
   }
 }
 
+export async function fixPurchaseRateAction(formData: unknown) {
+  try {
+    const user = await requireUser();
+    const parsed = FixRateSchema.parse(formData);
+
+    const updated = await fixPurchaseRate(
+      user.id,
+      user.role,
+      parsed.id,
+      parsed.ratePerGram,
+    );
+
+    revalidatePath("/purchases");
+    revalidatePath("/stock");
+    revalidatePath("/transactions");
+    revalidatePath("/settlement");
+    revalidatePath("/reports/purchases");
+    revalidatePath("/reports/ledger");
+    revalidatePath("/reports/outstandings");
+    revalidatePath("/dashboard");
+    return { success: true, data: serializeForClient(updated) };
+  } catch (err: unknown) {
+    return { success: false, error: sanitizeErrorMessage(err, "Failed to fix purchase rate") };
+  }
+}
+
 export async function cancelPurchaseAction(formData: unknown) {
   try {
     const user = await requireUser();
@@ -105,9 +135,34 @@ export async function cancelPurchaseAction(formData: unknown) {
     revalidatePath("/purchases");
     revalidatePath("/stock");
     revalidatePath("/transactions");
+    revalidatePath("/settlement");
+    revalidatePath("/reports/purchases");
+    revalidatePath("/reports/ledger");
+    revalidatePath("/reports/outstandings");
     revalidatePath("/dashboard");
     return { success: true, data: serializeForClient(cancelled) };
   } catch (err: unknown) {
     return { success: false, error: sanitizeErrorMessage(err, "Failed to cancel purchase") };
+  }
+}
+
+export async function closePurchaseAction(formData: unknown) {
+  try {
+    const user = await requireUser();
+    const { z } = await import("zod");
+    const schema = z.object({ purchaseId: z.string().min(1, "Purchase ID required") });
+    const parsed = schema.parse(formData);
+
+    const { closePurchase } = await import("@/lib/services/purchase-service");
+    const closed = await closePurchase(user.id, user.role, parsed.purchaseId);
+
+    revalidatePath("/purchases");
+    revalidatePath(`/purchases/${parsed.purchaseId}`);
+    revalidatePath("/reports/purchases");
+    revalidatePath("/reports/ledger");
+    revalidatePath("/dashboard");
+    return { success: true, data: serializeForClient(closed) };
+  } catch (err: unknown) {
+    return { success: false, error: sanitizeErrorMessage(err, "Failed to close purchase deal") };
   }
 }

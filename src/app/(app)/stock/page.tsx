@@ -29,6 +29,8 @@ export default async function StockPage() {
     adjustmentIncreaseGrams: p.adjustmentIncreaseGrams.toString(),
     adjustmentDecreaseGrams: p.adjustmentDecreaseGrams.toString(),
     currentWeightGrams: p.currentWeightGrams.toString(),
+    reservedWeightGrams: p.reservedWeightGrams.toString(),
+    availableToSellWeightGrams: p.availableToSellWeightGrams.toString(),
     averagePurchaseRate: p.averagePurchaseRate.toString(),
     totalPurchaseValue: p.totalPurchaseValue.toString(),
     averageSellingRate: p.averageSellingRate.toString(),

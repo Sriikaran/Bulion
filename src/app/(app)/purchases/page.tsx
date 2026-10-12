@@ -49,9 +49,45 @@ export default async function PurchasesPage() {
     metalId: p.metalId,
     purityId: p.purityId,
     weightGrams: p.weightGrams.toString(),
-    ratePerGram: p.ratePerGram.toString(),
-    totalAmount: p.totalAmount.toString(),
+    rateStatus: p.rateStatus,
+    ratePerGram: p.ratePerGram != null ? p.ratePerGram.toString() : null,
+    totalAmount: p.totalAmount != null ? p.totalAmount.toString() : null,
+    rateFixedAt: p.rateFixedAt?.toISOString() || null,
     paymentMode: p.paymentMode,
+    paymentStatus: p.paymentStatus,
+    paidAmount: p.payments
+      .filter((pay) => pay.status === "COMPLETED")
+      .reduce((sum, pay) => sum + parseFloat(pay.amount.toString()), 0)
+      .toFixed(2),
+    outstandingAmount: p.status === "CANCELLED" || p.totalAmount == null
+      ? "0.00"
+      : Math.max(
+          0,
+          parseFloat(p.totalAmount.toString()) -
+            p.payments
+              .filter((pay) => pay.status === "COMPLETED")
+              .reduce((sum, pay) => sum + parseFloat(pay.amount.toString()), 0),
+        ).toFixed(2),
+    fulfilmentStatus: p.fulfilmentStatus,
+    fulfilledWeightGrams: (p.fulfilments || [])
+      .filter((f) => f.status !== "CANCELLED")
+      .reduce((sum, f) => sum + parseFloat(f.weightGrams.toString()), 0)
+      .toFixed(4),
+    remainingWeightGrams: Math.max(
+      0,
+      parseFloat(p.weightGrams.toString()) -
+        (p.fulfilments || [])
+          .filter((f) => f.status !== "CANCELLED")
+          .reduce((sum, f) => sum + parseFloat(f.weightGrams.toString()), 0),
+    ).toFixed(4),
+    fulfilments: (p.fulfilments || []).map((f) => ({
+      id: f.id,
+      fulfilmentNumber: f.fulfilmentNumber,
+      weightGrams: f.weightGrams.toString(),
+      fulfilledAt: f.fulfilledAt.toISOString(),
+      notes: f.notes,
+      status: f.status,
+    })),
     notes: p.notes,
     status: p.status,
     cancelReason: p.cancelReason,
@@ -61,6 +97,21 @@ export default async function PurchasesPage() {
     purity: { id: p.purity.id, label: p.purity.label, fineness: p.purity.fineness.toString() },
     counterparty: p.counterparty ? { id: p.counterparty.id, name: p.counterparty.name, phone: p.counterparty.phone } : null,
     createdBy: { id: p.createdBy.id, name: p.createdBy.name, email: p.createdBy.email },
+    payments: p.payments.map((pay) => ({
+      id: pay.id,
+      paymentNumber: pay.paymentNumber,
+      type: pay.type,
+      date: pay.date.toISOString(),
+      amount: pay.amount.toString(),
+      paymentMode: pay.paymentMode,
+      referenceNumber: pay.referenceNumber,
+      notes: pay.notes,
+      status: pay.status,
+      cancelReason: pay.cancelReason,
+      cancelledAt: pay.cancelledAt?.toISOString() || null,
+      createdByName: pay.createdBy.name,
+      createdAt: pay.createdAt.toISOString(),
+    })),
   }));
 
   return (

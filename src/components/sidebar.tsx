@@ -11,7 +11,7 @@ import {
   BarChart3,
   Sliders,
   History,
-  Settings,
+  TrendingUp,
   LogOut,
   Menu,
   X,
@@ -22,6 +22,8 @@ import {
   Sparkles,
   ShieldCheck,
   UserCog,
+  Calculator,
+  Percent,
 } from "lucide-react";
 import { authClient } from "@/lib/auth/auth-client";
 import { useTheme } from "@/components/theme-provider";
@@ -237,7 +239,10 @@ export function Sidebar({ user }: SidebarProps) {
     { label: "Reports", href: "/reports", icon: BarChart3 },
     { label: "Adjustments", href: "/adjustments", icon: Sliders },
     { label: "Transactions", href: "/transactions", icon: History },
+    { label: "Quote Calculator", href: "/quotes", icon: Calculator },
     { label: "Masters", href: "/masters", icon: ShieldCheck },
+    { label: "Market Rates", href: "/masters/market-rates", icon: TrendingUp },
+    { label: "Margin Rules", href: "/masters/margins", icon: Percent },
     { label: "Counterparties", href: "/counterparties", icon: UserCog },
   ];
 

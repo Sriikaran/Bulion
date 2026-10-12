@@ -23,6 +23,12 @@ export async function writeAudit(
     purchaseId?: string;
     saleId?: string;
     adjustmentId?: string;
+    paymentId?: string;
+    fulfilmentId?: string;
+    reservationId?: string;
+    marketRateId?: string;
+    marginRuleId?: string;
+    quoteId?: string;
   },
 ) {
   await tx.auditLog.create({
@@ -39,6 +45,12 @@ export async function writeAudit(
       purchaseId: opts.purchaseId,
       saleId: opts.saleId,
       adjustmentId: opts.adjustmentId,
+      paymentId: opts.paymentId,
+      fulfilmentId: opts.fulfilmentId,
+      reservationId: opts.reservationId,
+      marketRateId: opts.marketRateId,
+      marginRuleId: opts.marginRuleId,
+      quoteId: opts.quoteId,
     },
   });
 }

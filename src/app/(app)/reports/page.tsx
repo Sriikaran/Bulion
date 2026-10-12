@@ -15,8 +15,12 @@ import {
   Scale,
   DollarSign,
   History,
+  BarChart3,
   ArrowRight,
   ShieldAlert,
+  Lock,
+  TrendingUp,
+  Calculator,
 } from "lucide-react";
 
 export const metadata = { title: "Reports — Bullion" };
@@ -138,6 +142,60 @@ export default async function ReportsHubPage() {
       href: "/reports/transactions",
       icon: History,
       accent: "#EC4899",
+      role: "STAFF",
+    },
+    {
+      title: "Counterparty Outstandings (V2)",
+      description:
+        "Track real-time payables to suppliers and receivables from buyers derived from actual financial settlements.",
+      href: "/reports/outstandings",
+      icon: Users,
+      accent: "#6366F1",
+      role: "STAFF",
+    },
+    {
+      title: "Party Financial Ledger (V2)",
+      description:
+        "Chronological running account statement of debits, credits, invoices, payments, and receipts per counterparty.",
+      href: "/reports/ledger",
+      icon: BarChart3,
+      accent: "#C59A58",
+      role: "STAFF",
+    },
+    {
+      title: "Physical Fulfilment Report (V3.2)",
+      description:
+        "Physical delivery tracking showing agreed vs fulfilled weights, pending physical stock commitments, and partial deliveries.",
+      href: "/reports/fulfilment",
+      icon: Package,
+      accent: "#10B981",
+      role: "STAFF",
+    },
+    {
+      title: "Rate Blocks & Reservations Report (V3.3)",
+      description:
+        "Active, consumed, and expired commercial rate blocks temporarily reserving price/weight for unfixed bullion deals.",
+      href: "/reports/rate-reservations",
+      icon: Lock,
+      accent: "#C59A58",
+      role: "STAFF",
+    },
+    {
+      title: "Market Reference Rates Report (V3.4)",
+      description:
+        "Time-series log of benchmark market rates per metal & purity for quoting and operational baseline pricing.",
+      href: "/reports/market-rates",
+      icon: TrendingUp,
+      accent: "#3B82F6",
+      role: "STAFF",
+    },
+    {
+      title: "Commercial Quotes Report (V3.5)",
+      description:
+        "Historical log of calculated commercial quotes, margin rules applied, and downstream rate reservations.",
+      href: "/reports/quotes",
+      icon: Calculator,
+      accent: "#10B981",
       role: "STAFF",
     },
   ];

@@ -12,18 +12,28 @@ import {
   Scale,
   DollarSign,
   History,
+  PackageCheck,
+  Lock,
+  TrendingUp,
+  Calculator,
 } from "lucide-react";
 
 const REPORT_TABS = [
   { label: "Overview", href: "/reports", icon: BarChart3 },
   { label: "Purchase Register", href: "/reports/purchases", icon: ShoppingCart },
   { label: "Sales Register", href: "/reports/sales", icon: TrendingDown },
+  { label: "Quotes", href: "/reports/quotes", icon: Calculator },
+  { label: "Market Rates", href: "/reports/market-rates", icon: TrendingUp },
+  { label: "Rate Reservations", href: "/reports/rate-reservations", icon: Lock },
+  { label: "Fulfilments", href: "/reports/fulfilment", icon: PackageCheck },
   { label: "Current Stock", href: "/reports/stock", icon: Package },
   { label: "Supplier-wise", href: "/reports/suppliers", icon: Users },
   { label: "Buyer-wise", href: "/reports/buyers", icon: UserCheck },
   { label: "Purchase vs Sales", href: "/reports/purchase-vs-sales", icon: Scale },
   { label: "Bullion Profit", href: "/reports/profit", icon: DollarSign },
   { label: "Transaction History", href: "/reports/transactions", icon: History },
+  { label: "Outstandings", href: "/reports/outstandings", icon: Users },
+  { label: "Party Ledger", href: "/reports/ledger", icon: BarChart3 },
 ];
 
 export function ReportsNav() {

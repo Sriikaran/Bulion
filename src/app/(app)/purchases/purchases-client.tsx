@@ -5,7 +5,6 @@ import {
   ShoppingCart,
   Plus,
   Search,
-  Filter,
   CheckCircle,
   Clock,
   XCircle,
@@ -13,18 +12,24 @@ import {
   Send,
   Ban,
   Loader2,
-  Calendar,
+  Wallet,
   DollarSign,
-  Scale,
+  PackageCheck,
+  Lock,
 } from "lucide-react";
 import {
   createPurchaseDraftAction,
   postPurchaseAction,
   createAndPostPurchaseAction,
   cancelPurchaseAction,
+  closePurchaseAction,
 } from "@/lib/actions/purchase-actions";
 import { formatCurrency, formatGrams, formatDate } from "@/lib/utils/helpers";
 import type { PaymentMode, TransactionStatus } from "@prisma/client";
+import { SettlementDialog } from "@/components/settlement-dialog";
+import { FixRateDialog } from "@/components/fix-rate-dialog";
+import { FulfilmentDialog } from "@/components/fulfilment-dialog";
+import { RateReservationDialog } from "@/components/rate-reservation-dialog";
 
 interface PurchaseRow {
   id: string;
@@ -36,11 +41,28 @@ interface PurchaseRow {
   metalId: string;
   purityId: string;
   weightGrams: string;
-  ratePerGram: string;
-  totalAmount: string;
+  rateStatus?: "FIXED" | "UNFIXED";
+  ratePerGram?: string | null;
+  totalAmount?: string | null;
+  rateFixedAt?: string | Date | null;
+  fulfilmentStatus?: "PENDING" | "PARTIALLY_FULFILLED" | "FULFILLED" | "CANCELLED";
+  fulfilledWeightGrams?: string;
+  remainingWeightGrams?: string;
+  fulfilments?: Array<{
+    id: string;
+    fulfilmentNumber: string;
+    weightGrams: string;
+    fulfilledAt: string | Date;
+    notes?: string | null;
+    status?: string;
+  }>;
   paymentMode: PaymentMode;
   notes?: string | null;
   status: TransactionStatus;
+  paymentStatus?: "UNPAID" | "PARTIALLY_PAID" | "PAID";
+  paidAmount?: string;
+  outstandingAmount?: string;
+  payments?: unknown[];
   cancelReason?: string | null;
   cancelledAt?: string | Date | null;
   createdAt: string | Date;
@@ -77,6 +99,10 @@ export function PurchasesClient({
   // Modals
   const [showNewModal, setShowNewModal] = useState(false);
   const [selectedPurchase, setSelectedPurchase] = useState<PurchaseRow | null>(null);
+  const [settlementPurchase, setSettlementPurchase] = useState<PurchaseRow | null>(null);
+  const [fixRatePurchase, setFixRatePurchase] = useState<PurchaseRow | null>(null);
+  const [reservationPurchase, setReservationPurchase] = useState<PurchaseRow | null>(null);
+  const [fulfilmentPurchase, setFulfilmentPurchase] = useState<PurchaseRow | null>(null);
   const [cancellingPurchase, setCancellingPurchase] = useState<PurchaseRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
 
@@ -169,6 +195,7 @@ export function PurchasesClient({
                 <th className="py-3 px-4 text-right">Rate/g</th>
                 <th className="py-3 px-4 text-right">Total Amount</th>
                 <th className="py-3 px-4">Payment</th>
+                <th className="py-3 px-4">Fulfilment</th>
                 <th className="py-3 px-4">Status</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
@@ -176,7 +203,7 @@ export function PurchasesClient({
             <tbody className="divide-y divide-[var(--border-primary)]">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-[var(--text-muted)]">
+                  <td colSpan={11} className="py-12 text-center text-[var(--text-muted)]">
                     No purchase transactions found
                   </td>
                 </tr>
@@ -207,15 +234,71 @@ export function PurchasesClient({
                       {formatGrams(p.weightGrams)}
                     </td>
                     <td className="py-3 px-4 text-right font-mono text-[var(--text-secondary)]">
-                      {formatCurrency(p.ratePerGram)}
+                      {p.rateStatus === "UNFIXED" || !p.ratePerGram ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-500 border border-amber-500/30">
+                          UNFIXED
+                        </span>
+                      ) : (
+                        formatCurrency(p.ratePerGram)
+                      )}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-bold text-[#C59A58]">
-                      {formatCurrency(p.totalAmount)}
+                      {p.rateStatus === "UNFIXED" || !p.totalAmount ? (
+                        <span className="text-[11px] text-[var(--text-muted)] italic font-normal">
+                          Pending fixing
+                        </span>
+                      ) : (
+                        formatCurrency(p.totalAmount)
+                      )}
                     </td>
                     <td className="py-3 px-4">
-                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-black/5 dark:bg-white/5 text-[var(--text-secondary)]">
-                        {p.paymentMode}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-black/5 dark:bg-white/5 text-[var(--text-secondary)] w-fit">
+                          {p.paymentMode}
+                        </span>
+                        {p.status === "POSTED" && p.paymentStatus && (
+                          <span
+                            className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded w-fit ${
+                              p.paymentStatus === "PAID"
+                                ? "bg-green-500/10 text-green-500 border border-green-500/20"
+                                : p.paymentStatus === "PARTIALLY_PAID"
+                                ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                                : "bg-red-500/10 text-red-400 border border-red-500/20"
+                            }`}
+                          >
+                            {p.paymentStatus === "PAID" ? "PAID" : p.paymentStatus === "PARTIALLY_PAID" ? "PARTIAL" : "UNPAID"}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex flex-col gap-1">
+                        <span
+                          className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded w-fit ${
+                            p.fulfilmentStatus === "FULFILLED"
+                              ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
+                              : p.fulfilmentStatus === "PARTIALLY_FULFILLED"
+                              ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                              : p.fulfilmentStatus === "CANCELLED"
+                              ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                              : "bg-amber-500/10 text-amber-500 border border-amber-500/20"
+                          }`}
+                        >
+                          <PackageCheck className="w-2.5 h-2.5" />
+                          {p.fulfilmentStatus === "FULFILLED"
+                            ? "FULFILLED"
+                            : p.fulfilmentStatus === "PARTIALLY_FULFILLED"
+                            ? "PARTIAL"
+                            : p.fulfilmentStatus === "CANCELLED"
+                            ? "CANCELLED"
+                            : "PENDING"}
+                        </span>
+                        {p.fulfilledWeightGrams !== undefined && (
+                          <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                            {formatGrams(p.fulfilledWeightGrams)} / {formatGrams(p.weightGrams)}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-4">
                       <span
@@ -246,6 +329,74 @@ export function PurchasesClient({
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </button>
+                        {p.status === "POSTED" && p.fulfilmentStatus !== "FULFILLED" && p.fulfilmentStatus !== "CANCELLED" && (
+                          <button
+                            onClick={() => setFulfilmentPurchase(p)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition"
+                            title="Fulfil physical delivery"
+                          >
+                            <PackageCheck className="w-3 h-3" />
+                            <span>Fulfil</span>
+                          </button>
+                        )}
+                        {p.rateStatus === "UNFIXED" && p.status !== "CANCELLED" && (
+                          <>
+                            <button
+                              onClick={() => setReservationPurchase(p)}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-500/15 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/25 transition"
+                              title="Reserve rate for this purchase"
+                            >
+                              <Lock className="w-3 h-3" />
+                              <span>Reserve</span>
+                            </button>
+                            <button
+                              onClick={() => setFixRatePurchase(p)}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30 hover:bg-amber-500/25 transition"
+                              title="Fix Rate for this purchase"
+                            >
+                              <DollarSign className="w-3 h-3" />
+                              <span>Fix Rate</span>
+                            </button>
+                          </>
+                        )}
+                        {p.status === "POSTED" && p.rateStatus !== "UNFIXED" && (
+                          <button
+                            onClick={() => setSettlementPurchase(p)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[#C59A58]/15 text-[#E4BE85] border border-[#C59A58]/30 hover:bg-[#C59A58]/25 transition"
+                            title="Manage payments and settlements"
+                          >
+                            <Wallet className="w-3 h-3" />
+                            <span>Pay</span>
+                          </button>
+                        )}
+                        {p.status === "POSTED" &&
+                          p.rateStatus === "FIXED" &&
+                          p.fulfilmentStatus === "FULFILLED" &&
+                          p.paymentStatus === "PAID" && (
+                            <button
+                              disabled={isPending}
+                              onClick={() => {
+                                if (window.confirm(`Close purchase ${p.invoiceNumber}? This transaction is fully fulfilled and paid.`)) {
+                                  startTransition(async () => {
+                                    const res = await closePurchaseAction({ purchaseId: p.id });
+                                    if (!res.success) setErrorMsg(res.error || "Failed to close purchase");
+                                    else window.location.reload();
+                                  });
+                                }
+                              }}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-500/15 text-blue-400 border border-blue-500/30 hover:bg-blue-500/25 transition cursor-pointer"
+                              title="Explicitly close settled and fulfilled deal"
+                            >
+                              <CheckCircle className="w-3 h-3" />
+                              <span>Close Deal</span>
+                            </button>
+                          )}
+                        {p.status === "CLOSED" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                            <CheckCircle className="w-3 h-3" />
+                            CLOSED
+                          </span>
+                        )}
                         {p.status === "DRAFT" && (
                           <button
                             disabled={isPending}
@@ -297,6 +448,10 @@ export function PurchasesClient({
         <PurchaseDetailModal
           purchase={selectedPurchase}
           onClose={() => setSelectedPurchase(null)}
+          onOpenSettlement={(p) => {
+            setSelectedPurchase(null);
+            setSettlementPurchase(p);
+          }}
         />
       )}
 
@@ -362,6 +517,88 @@ export function PurchasesClient({
           </div>
         </div>
       )}
+
+      {/* Fix Rate Dialog (V3 Phase 1) */}
+      {fixRatePurchase && (
+        <FixRateDialog
+          isOpen={true}
+          onClose={() => setFixRatePurchase(null)}
+          transactionId={fixRatePurchase.id}
+          invoiceNumber={fixRatePurchase.invoiceNumber}
+          transactionType="PURCHASE"
+          metalName={fixRatePurchase.metal.name}
+          metalCode={fixRatePurchase.metal.code}
+          purityLabel={fixRatePurchase.purity.label}
+          weightGrams={fixRatePurchase.weightGrams}
+          counterpartyName={fixRatePurchase.counterparty?.name || fixRatePurchase.supplierName}
+          onSuccess={() => {
+            window.location.reload();
+          }}
+        />
+      )}
+
+      {/* Rate Reservation Dialog (V3 Phase 3) */}
+      {reservationPurchase && (
+        <RateReservationDialog
+          isOpen={true}
+          onClose={() => setReservationPurchase(null)}
+          transaction={{
+            id: reservationPurchase.id,
+            invoiceNumber: reservationPurchase.invoiceNumber,
+            type: "PURCHASE",
+            metalId: reservationPurchase.metalId,
+            purityId: reservationPurchase.purityId,
+            metalName: reservationPurchase.metal.name,
+            metalCode: reservationPurchase.metal.code,
+            purityLabel: reservationPurchase.purity.label,
+            weightGrams: reservationPurchase.weightGrams,
+            counterpartyName: reservationPurchase.counterparty?.name || reservationPurchase.supplierName,
+            status: reservationPurchase.status,
+            rateStatus: reservationPurchase.rateStatus || "UNFIXED",
+          }}
+          onSuccess={() => {
+            window.location.reload();
+          }}
+        />
+      )}
+
+      {/* Financial Settlement Dialog (V2) */}
+      {settlementPurchase && (
+        <SettlementDialog
+          isOpen={true}
+          onClose={() => setSettlementPurchase(null)}
+          invoiceType="PURCHASE"
+          invoiceId={settlementPurchase.id}
+          invoiceNumber={settlementPurchase.invoiceNumber}
+          counterpartyId={settlementPurchase.counterpartyId || undefined}
+          counterpartyName={settlementPurchase.supplierName}
+          invoiceTotal={settlementPurchase.totalAmount || "0"}
+          userRole={userRole}
+          onSuccess={() => {
+            window.location.reload();
+          }}
+        />
+      )}
+
+      {/* Physical Fulfilment Dialog (V3 Phase 2) */}
+      {fulfilmentPurchase && (
+        <FulfilmentDialog
+          isOpen={true}
+          onClose={() => setFulfilmentPurchase(null)}
+          transactionId={fulfilmentPurchase.id}
+          invoiceNumber={fulfilmentPurchase.invoiceNumber}
+          transactionType="PURCHASE"
+          metalName={fulfilmentPurchase.metal.name}
+          purityLabel={fulfilmentPurchase.purity.label}
+          agreedWeightGrams={fulfilmentPurchase.weightGrams}
+          fulfilledWeightGrams={fulfilmentPurchase.fulfilledWeightGrams || "0"}
+          remainingWeightGrams={fulfilmentPurchase.remainingWeightGrams || fulfilmentPurchase.weightGrams}
+          counterpartyName={fulfilmentPurchase.counterparty?.name || fulfilmentPurchase.supplierName}
+          onSuccess={() => {
+            window.location.reload();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -399,6 +636,7 @@ function NewPurchaseModal({
 
   // Weight & rate
   const [weightGrams, setWeightGrams] = useState("");
+  const [rateStatus, setRateStatus] = useState<"FIXED" | "UNFIXED">("FIXED");
   const [ratePerGram, setRatePerGram] = useState("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("CASH");
   const [notes, setNotes] = useState("");
@@ -431,7 +669,9 @@ function NewPurchaseModal({
   // Preview total
   const weightNum = parseFloat(weightGrams) || 0;
   const rateNum = parseFloat(ratePerGram) || 0;
-  const previewTotal = weightNum > 0 && rateNum > 0 ? (weightNum * rateNum).toFixed(2) : "0.00";
+  const previewTotal = rateStatus === "FIXED" && weightNum > 0 && rateNum > 0
+    ? (weightNum * rateNum).toFixed(2)
+    : "0.00";
 
   const handleSave = async (postImmediately: boolean) => {
     if (!supplierName.trim()) {
@@ -446,7 +686,7 @@ function NewPurchaseModal({
       onError("Weight must be greater than 0");
       return;
     }
-    if (rateNum <= 0) {
+    if (rateStatus === "FIXED" && rateNum <= 0) {
       onError("Rate per gram must be greater than 0");
       return;
     }
@@ -461,7 +701,8 @@ function NewPurchaseModal({
       metalId,
       purityId,
       weightGrams,
-      ratePerGram,
+      rateStatus,
+      ratePerGram: rateStatus === "FIXED" ? ratePerGram : undefined,
       paymentMode,
       notes: notes.trim() || undefined,
     };
@@ -592,6 +833,35 @@ function NewPurchaseModal({
             </div>
           </div>
 
+          {/* Rate Selection Mode: Fixed or Unfixed */}
+          <div className="p-3.5 rounded-xl bg-black/5 dark:bg-white/5 border border-[var(--border-primary)] space-y-2.5">
+            <span className="font-bold text-[var(--text-primary)] block">Rate Fixing Agreement</span>
+            <div className="flex items-center gap-6">
+              <label className="flex items-center gap-2 cursor-pointer text-xs">
+                <input
+                  type="radio"
+                  name="purchaseRateStatus"
+                  value="FIXED"
+                  checked={rateStatus === "FIXED"}
+                  onChange={() => setRateStatus("FIXED")}
+                  className="text-[#C59A58] focus:ring-[#C59A58]"
+                />
+                <span className="font-semibold text-[var(--text-primary)]">Fixed Rate</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer text-xs">
+                <input
+                  type="radio"
+                  name="purchaseRateStatus"
+                  value="UNFIXED"
+                  checked={rateStatus === "UNFIXED"}
+                  onChange={() => setRateStatus("UNFIXED")}
+                  className="text-amber-500 focus:ring-amber-500"
+                />
+                <span className="font-semibold text-amber-600 dark:text-amber-400">Unfixed Rate (Fix Later)</span>
+              </label>
+            </div>
+          </div>
+
           {/* Weight & Rate */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -606,25 +876,35 @@ function NewPurchaseModal({
               />
             </div>
             <div>
-              <label className="block mb-1 font-semibold text-[var(--text-secondary)]">Purchase Rate / g (₹) *</label>
+              <label className="block mb-1 font-semibold text-[var(--text-secondary)]">
+                Purchase Rate / g (₹) {rateStatus === "FIXED" ? "*" : "(Unfixed)"}
+              </label>
               <input
                 type="text"
-                required
-                placeholder="e.g. 7200.00"
-                value={ratePerGram}
+                required={rateStatus === "FIXED"}
+                disabled={rateStatus === "UNFIXED"}
+                placeholder={rateStatus === "UNFIXED" ? "Rate is unfixed" : "e.g. 7200.00"}
+                value={rateStatus === "UNFIXED" ? "" : ratePerGram}
                 onChange={(e) => setRatePerGram(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-[var(--bg-input)] border border-[var(--border-primary)] text-[var(--text-primary)] font-mono"
+                className="w-full px-3 py-2 rounded-xl bg-[var(--bg-input)] border border-[var(--border-primary)] text-[var(--text-primary)] font-mono disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
           </div>
 
           {/* Total Preview Pill */}
-          <div className="p-3 rounded-xl bg-[#C59A58]/10 border border-[#C59A58]/30 flex items-center justify-between">
-            <span className="font-semibold text-[var(--text-secondary)]">Calculated Purchase Total:</span>
-            <span className="font-mono font-bold text-sm text-[#C59A58]">
-              {formatCurrency(previewTotal)}
-            </span>
-          </div>
+          {rateStatus === "FIXED" ? (
+            <div className="p-3 rounded-xl bg-[#C59A58]/10 border border-[#C59A58]/30 flex items-center justify-between">
+              <span className="font-semibold text-[var(--text-secondary)]">Calculated Purchase Total:</span>
+              <span className="font-mono font-bold text-sm text-[#C59A58]">
+                {formatCurrency(previewTotal)}
+              </span>
+            </div>
+          ) : (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400 flex items-center justify-between">
+              <span className="font-semibold">Rate: Unfixed</span>
+              <span className="text-[11px] text-[var(--text-muted)] italic">Final amount will be determined after rate fixing.</span>
+            </div>
+          )}
 
           {/* Payment & Notes */}
           <div className="grid grid-cols-2 gap-3">
@@ -695,10 +975,14 @@ function NewPurchaseModal({
 function PurchaseDetailModal({
   purchase,
   onClose,
+  onOpenSettlement,
 }: {
   purchase: PurchaseRow;
   onClose: () => void;
+  onOpenSettlement?: (p: PurchaseRow) => void;
 }) {
+  const isPosted = purchase.status === "POSTED";
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
       <div className="w-full max-w-lg bg-[var(--bg-card)] border border-[var(--border-primary)] rounded-2xl p-6 shadow-2xl space-y-4">
@@ -711,17 +995,19 @@ function PurchaseDetailModal({
               Created on {formatDate(purchase.createdAt)} by {purchase.createdBy.name}
             </p>
           </div>
-          <span
-            className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-              purchase.status === "POSTED"
-                ? "bg-green-500/10 text-green-600 border border-green-500/20"
-                : purchase.status === "DRAFT"
-                ? "bg-amber-500/10 text-amber-600 border border-amber-500/20"
-                : "bg-red-500/10 text-red-600 border border-red-500/20"
-            }`}
-          >
-            {purchase.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <span
+              className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                purchase.status === "POSTED"
+                  ? "bg-green-500/10 text-green-600 border border-green-500/20"
+                  : purchase.status === "DRAFT"
+                  ? "bg-amber-500/10 text-amber-600 border border-amber-500/20"
+                  : "bg-red-500/10 text-red-600 border border-red-500/20"
+              }`}
+            >
+              {purchase.status}
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-4 text-xs">
@@ -755,13 +1041,21 @@ function PurchaseDetailModal({
           <div>
             <span className="text-[var(--text-muted)] block">Purchase Rate:</span>
             <span className="font-mono font-bold text-[var(--text-secondary)]">
-              {formatCurrency(purchase.ratePerGram)} / g
+              {purchase.rateStatus === "UNFIXED" || !purchase.ratePerGram ? (
+                <span className="text-amber-500 font-semibold">UNFIXED</span>
+              ) : (
+                `${formatCurrency(purchase.ratePerGram)} / g`
+              )}
             </span>
           </div>
           <div>
-            <span className="text-[var(--text-muted)] block">Total Amount:</span>
+            <span className="text-[var(--text-muted)] block">Invoice Amount:</span>
             <span className="font-mono font-bold text-sm text-[#C59A58]">
-              {formatCurrency(purchase.totalAmount)}
+              {purchase.rateStatus === "UNFIXED" || !purchase.totalAmount ? (
+                <span className="text-xs text-[var(--text-muted)] font-normal italic">Pending rate fixing</span>
+              ) : (
+                formatCurrency(purchase.totalAmount)
+              )}
             </span>
           </div>
           <div>
@@ -769,6 +1063,44 @@ function PurchaseDetailModal({
             <span className="font-semibold text-[var(--text-primary)]">{purchase.paymentMode}</span>
           </div>
         </div>
+
+        {/* Financial Settlement Card (V2) */}
+        {isPosted && (
+          <div className="p-3.5 rounded-xl bg-black/5 dark:bg-white/5 border border-[var(--border-primary)] space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
+                <Wallet className="w-3.5 h-3.5 text-[#C59A58]" />
+                Financial Settlement Status:
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                  purchase.paymentStatus === "PAID"
+                    ? "bg-green-500/10 text-green-500 border border-green-500/20"
+                    : purchase.paymentStatus === "PARTIALLY_PAID"
+                    ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                    : "bg-red-500/10 text-red-400 border border-red-500/20"
+                }`}
+              >
+                {purchase.paymentStatus || "UNPAID"}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1 font-mono">
+              <div>
+                <span className="text-[10px] text-[var(--text-muted)] block uppercase">Paid to Date:</span>
+                <span className="font-bold text-emerald-400">
+                  {formatCurrency(purchase.paidAmount || "0")}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-[var(--text-muted)] block uppercase">Outstanding Payable:</span>
+                <span className="font-bold text-red-400">
+                  {formatCurrency(purchase.outstandingAmount || purchase.totalAmount)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {purchase.notes && (
           <div className="p-3 rounded-xl bg-black/5 dark:bg-white/5 border border-[var(--border-primary)] text-xs">
@@ -789,10 +1121,22 @@ function PurchaseDetailModal({
           </div>
         )}
 
-        <div className="flex justify-end pt-2">
+        <div className="flex items-center justify-between pt-2 border-t border-[var(--border-primary)]">
+          {isPosted && onOpenSettlement ? (
+            <button
+              onClick={() => onOpenSettlement(purchase)}
+              className="px-3 py-2 text-xs rounded-xl bg-[#C59A58]/15 hover:bg-[#C59A58]/25 text-[#E4BE85] border border-[#C59A58]/30 font-semibold flex items-center gap-1.5 transition"
+            >
+              <Wallet className="w-3.5 h-3.5" />
+              <span>Record Payment / History</span>
+            </button>
+          ) : (
+            <div />
+          )}
+
           <button
             onClick={onClose}
-            className="px-4 py-2 text-xs rounded-xl bg-[#C59A58] text-white font-semibold"
+            className="px-4 py-2 text-xs rounded-xl bg-[var(--bg-card-hover)] hover:bg-white/10 text-white font-semibold border border-[var(--border-primary)]"
           >
             Close
           </button>
